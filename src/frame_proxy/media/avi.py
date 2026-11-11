@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 from frame_proxy.domain.errors import ErrorCode, MediaValidationError
+from frame_proxy.media.audio import AudioDescriptor, frame_boundary_sample
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class AviDescriptor:
     top_down: bool
     frame_offsets: tuple[int, ...]
     handler: str
+    audio: AudioDescriptor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +88,8 @@ def _parse_avih(buffer: bytes, chunk: _Chunk) -> tuple[int, int, int, int]:
     streams = fields[6]
     width = fields[8]
     height = fields[9]
-    if streams != 1:
-        _fail("exactly one video stream is supported")
+    if streams not in (1, 2):
+        _fail("one video stream with an optional audio stream is supported")
     if total_frames <= 0:
         _fail("AVI frame count must be positive")
     return total_frames, streams, width, height
@@ -102,7 +104,7 @@ def _parse_strh(buffer: bytes, chunk: _Chunk) -> tuple[int, int, int, int]:
     rate = fields[7]
     length = fields[9]
     if stream_type != b"vids":
-        _fail("the only stream must be video")
+        _fail("the first stream must be video")
     if scale <= 0 or rate <= 0:
         _fail("AVI frame rate ratio must be positive")
     if length <= 0:
@@ -137,6 +139,49 @@ def _parse_strf(
     return width, abs(signed_height), bit_count, compression, image_size, signed_height
 
 
+def _parse_audio_strh(buffer: bytes, chunk: _Chunk) -> tuple[int, int, int]:
+    if chunk.payload_size < 56:
+        _fail("AVI audio stream header is too short")
+    fields = struct.unpack_from("<4s4sIHHIIIIIIIIhhhh", buffer, chunk.payload_offset)
+    stream_type = fields[0]
+    scale = fields[6]
+    rate = fields[7]
+    length = fields[9]
+    if stream_type != b"auds":
+        _fail("the second stream must be audio")
+    if scale <= 0 or rate <= 0:
+        _fail("AVI audio stream rate must be positive")
+    if length <= 0:
+        _fail("AVI audio stream length must be positive")
+    return scale, rate, length
+
+
+def _parse_audio_strf(buffer: bytes, chunk: _Chunk) -> tuple[int, int, int, int, int]:
+    if chunk.payload_size < 16:
+        _fail("AVI audio format header is too short")
+    fields = struct.unpack_from("<HHIIHH", buffer, chunk.payload_offset)
+    format_tag = fields[0]
+    channels = fields[1]
+    sample_rate = fields[2]
+    avg_bytes_per_second = fields[3]
+    block_align = fields[4]
+    bits_per_sample = fields[5]
+    if format_tag != 1:
+        _fail("only uncompressed PCM audio is supported")
+    if channels <= 0:
+        _fail("AVI audio channel count must be positive")
+    if sample_rate <= 0:
+        _fail("AVI audio sample rate must be positive")
+    if bits_per_sample not in (8, 16, 24, 32):
+        _fail("unsupported PCM bit depth")
+    expected_align = channels * (bits_per_sample // 8)
+    if block_align != expected_align:
+        _fail("AVI audio block align does not match PCM geometry")
+    if avg_bytes_per_second != sample_rate * block_align:
+        _fail("AVI audio byte rate does not match PCM geometry")
+    return channels, sample_rate, bits_per_sample, block_align, avg_bytes_per_second
+
+
 def _simplify_ratio(numerator: int, denominator: int) -> tuple[int, int]:
     divisor = math.gcd(numerator, denominator)
     return numerator // divisor, denominator // divisor
@@ -162,19 +207,17 @@ def probe_avi(buffer: bytes) -> AviDescriptor:
     avih = _find_chunk(buffer, hdrl_start, hdrl_end, b"avih")
     if avih is None:
         _fail("AVI main header chunk is missing")
-    total_frames, _, avih_width, avih_height = _parse_avih(buffer, avih)
+    total_frames, stream_count, avih_width, avih_height = _parse_avih(buffer, avih)
 
-    stream_list: _Chunk | None = None
+    stream_lists: list[_Chunk] = []
     for chunk in _iter_chunks(buffer, hdrl_start, hdrl_end):
-        if chunk.tag == b"LIST":
-            start, end = _list_payload(buffer, chunk, b"strl")
-            if _find_chunk(buffer, start, end, b"strh") is not None:
-                stream_list = chunk
-                break
-    if stream_list is None:
-        _fail("AVI video stream list is missing")
-    stream_start, stream_end = _list_payload(buffer, stream_list, b"strl")
+        if chunk.tag == b"LIST" and chunk.payload_size >= 4:
+            if buffer[chunk.payload_offset : chunk.payload_offset + 4] == b"strl":
+                stream_lists.append(chunk)
+    if len(stream_lists) != stream_count:
+        _fail("AVI stream lists do not match the main header")
 
+    stream_start, stream_end = _list_payload(buffer, stream_lists[0], b"strl")
     strh = _find_chunk(buffer, stream_start, stream_end, b"strh")
     strf = _find_chunk(buffer, stream_start, stream_end, b"strf")
     if strh is None or strf is None:
@@ -188,6 +231,33 @@ def probe_avi(buffer: bytes) -> AviDescriptor:
         image_size,
         signed_height,
     ) = _parse_strf(buffer, strf)
+
+    audio_format: tuple[int, int, int, int] | None = None
+    audio_length = 0
+    if stream_count == 2:
+        audio_start, audio_end = _list_payload(buffer, stream_lists[1], b"strl")
+        audio_strh = _find_chunk(buffer, audio_start, audio_end, b"strh")
+        audio_strf = _find_chunk(buffer, audio_start, audio_end, b"strf")
+        if audio_strh is None or audio_strf is None:
+            _fail("AVI audio stream headers are incomplete")
+        audio_scale, audio_rate, audio_length = _parse_audio_strh(buffer, audio_strh)
+        (
+            audio_channels,
+            audio_sample_rate,
+            audio_bits,
+            audio_block_align,
+            audio_byte_rate,
+        ) = _parse_audio_strf(buffer, audio_strf)
+        if audio_scale != audio_block_align:
+            _fail("AVI audio stream scale must be the PCM block align")
+        if audio_rate != audio_byte_rate:
+            _fail("AVI audio stream rate must be the PCM byte rate")
+        audio_format = (
+            audio_channels,
+            audio_sample_rate,
+            audio_bits,
+            audio_block_align,
+        )
 
     if width != avih_width or height != avih_height:
         _fail("AVI main and stream dimensions disagree")
@@ -211,14 +281,23 @@ def probe_avi(buffer: bytes) -> AviDescriptor:
     movi_start, movi_end = _list_payload(buffer, movi, b"movi")
 
     offsets: list[int] = []
+    audio_offsets: list[int] = []
+    audio_sizes: list[int] = []
     for chunk in _iter_chunks(buffer, movi_start, movi_end):
         if chunk.tag == b"JUNK":
             continue
-        if chunk.tag != b"00db":
-            _fail(f"unsupported AVI media chunk {chunk.tag!r}")
-        if chunk.payload_size != frame_payload_size:
-            _fail("AVI frame payload size does not match geometry")
-        offsets.append(chunk.payload_offset)
+        if chunk.tag == b"00db":
+            if chunk.payload_size != frame_payload_size:
+                _fail("AVI frame payload size does not match geometry")
+            offsets.append(chunk.payload_offset)
+            continue
+        if chunk.tag == b"01wb" and audio_format is not None:
+            if chunk.payload_size % audio_format[3] != 0:
+                _fail("AVI audio chunk is not aligned to whole samples")
+            audio_offsets.append(chunk.payload_offset)
+            audio_sizes.append(chunk.payload_size)
+            continue
+        _fail(f"unsupported AVI media chunk {chunk.tag!r}")
 
     if len(offsets) != total_frames:
         _fail(
@@ -227,6 +306,38 @@ def probe_avi(buffer: bytes) -> AviDescriptor:
         )
 
     fps_num, fps_den = _simplify_ratio(rate, scale)
+    audio: AudioDescriptor | None = None
+    if audio_format is not None:
+        channels, sample_rate, bits_per_sample, block_align = audio_format
+        audio_bytes = sum(audio_sizes)
+        total_samples = audio_bytes // block_align
+        if total_samples != audio_length:
+            _fail(
+                "declared AVI audio length does not match media chunks",
+                code=ErrorCode.MEDIA_BOUNDS,
+            )
+        needed_samples = frame_boundary_sample(
+            total_frames,
+            fps_numerator=fps_num,
+            fps_denominator=fps_den,
+            sample_rate=sample_rate,
+        )
+        if total_samples < needed_samples:
+            _fail(
+                "AVI audio stream does not cover the video duration",
+                code=ErrorCode.MEDIA_BOUNDS,
+            )
+        audio = AudioDescriptor(
+            channels=channels,
+            sample_rate=sample_rate,
+            bits_per_sample=bits_per_sample,
+            block_align=block_align,
+            total_samples=total_samples,
+            byte_size=audio_bytes,
+            chunk_offsets=tuple(audio_offsets),
+            chunk_sizes=tuple(audio_sizes),
+        )
+
     return AviDescriptor(
         width=width,
         height=height,
@@ -238,5 +349,6 @@ def probe_avi(buffer: bytes) -> AviDescriptor:
         top_down=signed_height < 0,
         frame_offsets=tuple(offsets),
         handler="DIB",
+        audio=audio,
     )
 

@@ -14,10 +14,17 @@ from frame_proxy.media.avi_writer import build_sample_avi
 
 
 class HttpResult:
-    def __init__(self, status: int, content_type: str, body: bytes) -> None:
+    def __init__(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status = status
         self.content_type = content_type
         self.body = body
+        self.headers = headers or {}
 
     def json(self) -> dict[str, Any]:
         try:
@@ -85,6 +92,7 @@ class RunningService:
                 response.status,
                 response.getheader("Content-Type", ""),
                 response.read(),
+                {key.lower(): value for key, value in response.getheaders()},
             )
         finally:
             connection.close()

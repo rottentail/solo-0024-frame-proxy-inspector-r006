@@ -4,9 +4,11 @@
 
 Frame Proxy Inspector is a Python backend for archive and finishing teams
 that need a bounded, deterministic first pass over uncompressed AVI footage.
-The service records a clip only after its container and frame geometry are
-verified, indexes visible shot changes, and composes a contact sheet from one
-representative frame per detected scene.
+The service records a clip only after its container, frame geometry, and —
+when present — PCM audio track are verified, indexes visible shot changes,
+maps each detected scene to an exact audio sample range, serves the scene's
+lossless audio segment, and composes a contact sheet from one representative
+frame per detected scene.
 
 This service is intentionally not an editor, transcoder, or assembly surface.
 It concentrates on inspection artifacts that another stage can
@@ -36,9 +38,11 @@ verification on top of this healthy baseline.
 ### Video clip
 
 A clip is a registered RIFF/AVI asset with one uncompressed 24-bit BGR video
-stream. Its record stores the unique clip identifier, SHA-256 digest, frame
-count, frame rate ratio, width, height, row stride, and the first frame byte
-offset.
+stream and, optionally, one uncompressed PCM audio stream. Its record stores
+the unique clip identifier, SHA-256 digest, frame count, frame rate ratio,
+width, height, row stride, the first frame byte offset, and — for clips with
+audio — the PCM parameters, total sample count, and the SHA-256 digest of the
+PCM stream.
 
 Invariants:
 
@@ -46,6 +50,9 @@ Invariants:
 - Frame payload size, row stride, and image dimensions must agree.
 - Only bottom-up or top-down uncompressed DIB frames are accepted.
 - Width and height stay within the configured decoding limit.
+- An audio stream must be uncompressed PCM whose declared length equals the
+  stored sample count, whose chunks hold whole samples, and whose duration
+  covers the whole video time range.
 - A failed intake never leaves a visible clip record or partial media.
 
 State machine: `probing -> registered`. A rejected probe does not persist a
@@ -55,7 +62,9 @@ state.
 
 An inspection belongs to one registered clip and stores the sensitivity,
 minimum scene length, sampled frame fingerprints, cut frame numbers, scene
-ranges, and representative frames.
+ranges, and representative frames. For clips with audio it additionally
+stores the PCM parameters, the PCM stream digest, the inspected clip digest,
+and an exact sample range on every scene.
 
 Invariants:
 
@@ -63,6 +72,9 @@ Invariants:
 - Scene ranges are ordered, contiguous, and non-overlapping.
 - The first scene always begins at frame zero.
 - The final scene ends exactly at the clip frame count.
+- Scene sample ranges are derived from absolute frame numbers with exact
+  rational arithmetic, so adjacent scenes tile the inspected video time
+  range without overlap, gaps, or accumulated drift.
 - A failed inspection keeps a stable error code and never exposes partial
   scene data as successful output.
 
@@ -97,8 +109,9 @@ are terminal.
 
 - `http`: request parsing, identifiers, status mapping, and response encoding.
 - `domain`: entity records, limits, errors, and legal state transitions.
-- `media`: RIFF/AVI parsing, frame decoding, frame fingerprints, cut detection,
-  PPM encoding, and grid composition.
+- `media`: RIFF/AVI parsing, PCM audio slicing and WAV encoding, frame
+  decoding, frame fingerprints, cut detection, PPM encoding, and grid
+  composition.
 - `service`: workflow orchestration and observable failure behavior.
 - `storage`: namespaced files, exclusive creation, state updates, and atomic
   publication.
@@ -120,12 +133,16 @@ Steps:
    body.
 2. The domain gate checks byte limits and requested metadata stability.
 3. The AVI adapter parses RIFF, `avih`, `strh`, `strf`, and frame chunks.
-4. The service computes the digest and builds the clip record.
-5. Storage acquires the clip key, writes media and metadata through temporary
+4. When an audio stream is present, the adapter verifies the PCM format, the
+   declared against the stored sample count, per-chunk sample alignment, and
+   coverage of the whole video duration.
+5. The service computes the clip and PCM digests and builds the clip record.
+6. Storage acquires the clip key, writes media and metadata through temporary
    paths, and commits both only after the complete payload is durable.
 
 Success returns the immutable clip record. Failure returns a stable validation
-error and leaves no visible clip.
+error and leaves no visible clip; an incomplete audio track is rejected the
+same way and never publishes usable segments.
 
 ### 2. Index shot boundaries
 
@@ -141,13 +158,35 @@ Steps:
    fingerprints.
 5. The detector selects hard cuts whose distance exceeds the sensitivity
    threshold while honoring the minimum scene length.
-6. Scene ranges and representative frames are persisted and the inspection
+6. For clips with audio, the service binds the PCM parameters and digests of
+   the inspected material and maps every scene to its exact sample range.
+7. Scene ranges and representative frames are persisted and the inspection
    moves to `indexed`.
 
 Any decode, range, or persistence error moves the record to `failed` with a
 stable code. Successful inspections are immutable.
 
-### 3. Create contact sheet
+### 3. Read scene audio
+
+Entry point: `GET /v1/inspections/{inspection_id}/scenes/{scene_index}/audio`.
+
+Steps:
+
+1. The HTTP boundary validates the scene index.
+2. The service resolves an `indexed` inspection with a verified audio track.
+3. The stored clip bytes are re-read and their digest is checked against both
+   the clip record and the inspection's recorded clip digest.
+4. The scene's sample range is recomputed from the clip timing and compared
+   with the stored range.
+5. The PCM slice is copied verbatim from the (possibly scene-spanning) audio
+   chunks and wrapped in a canonical RIFF/WAVE header.
+
+Success returns `audio/x-wav` bytes whose `ETag` carries the WAV digest and
+whose `X-Frame-Proxy-Clip-Digest` header identifies the inspected material.
+A video-only inspection answers `404 audio_not_found`; no partial or
+resampled audio is ever produced.
+
+### 4. Create contact sheet
 
 Entry point: `POST /v1/inspections/{inspection_id}/contact-sheets`.
 
@@ -174,6 +213,7 @@ removed and no artifact URL becomes available.
 - `GET /v1/clips/{clip_id}`
 - `POST /v1/clips/{clip_id}/inspections`
 - `GET /v1/inspections/{inspection_id}`
+- `GET /v1/inspections/{inspection_id}/scenes/{scene_index}/audio`
 - `POST /v1/inspections/{inspection_id}/contact-sheets`
 - `GET /v1/contact-sheets/{sheet_id}`
 - `GET /v1/contact-sheets/{sheet_id}/artifact`

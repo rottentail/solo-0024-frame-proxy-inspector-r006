@@ -26,6 +26,43 @@ class Transition:
 
 
 @dataclass(slots=True)
+class AudioTrackRecord:
+    codec: str
+    channels: int
+    sample_rate: int
+    bits_per_sample: int
+    block_align: int
+    total_samples: int
+    byte_size: int
+    digest: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "codec": self.codec,
+            "channels": self.channels,
+            "sample_rate": self.sample_rate,
+            "bits_per_sample": self.bits_per_sample,
+            "block_align": self.block_align,
+            "total_samples": self.total_samples,
+            "byte_size": self.byte_size,
+            "digest": self.digest,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AudioTrackRecord":
+        return cls(
+            codec=str(data["codec"]),
+            channels=int(data["channels"]),
+            sample_rate=int(data["sample_rate"]),
+            bits_per_sample=int(data["bits_per_sample"]),
+            block_align=int(data["block_align"]),
+            total_samples=int(data["total_samples"]),
+            byte_size=int(data["byte_size"]),
+            digest=str(data["digest"]),
+        )
+
+
+@dataclass(slots=True)
 class ClipRecord:
     clip_id: str
     state: str
@@ -41,6 +78,7 @@ class ClipRecord:
     top_down: bool
     frame_offsets: list[int]
     handler: str
+    audio: AudioTrackRecord | None = None
     transitions: list[Transition] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
 
@@ -62,6 +100,7 @@ class ClipRecord:
             "top_down": self.top_down,
             "frame_offsets": list(self.frame_offsets),
             "handler": self.handler,
+            "audio": self.audio.as_dict() if self.audio is not None else None,
             "transitions": [item.as_dict() for item in self.transitions],
             "created_at": self.created_at,
         }
@@ -79,6 +118,7 @@ class ClipRecord:
             for item in data.get("transitions", [])
             if isinstance(item, dict)
         ]
+        audio = data.get("audio")
         return cls(
             clip_id=str(data["clip_id"]),
             state=str(data["state"]),
@@ -94,6 +134,7 @@ class ClipRecord:
             top_down=bool(data["top_down"]),
             frame_offsets=[int(value) for value in data.get("frame_offsets", [])],
             handler=str(data["handler"]),
+            audio=AudioTrackRecord.from_dict(audio) if isinstance(audio, dict) else None,
             transitions=transitions,
             created_at=str(data["created_at"]),
         )
@@ -108,9 +149,11 @@ class SceneRecord:
     mean_luma: float
     contrast: float
     dominant_rgb: tuple[int, int, int]
+    sample_start: int | None = None
+    sample_end: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        value: dict[str, Any] = {
             "index": self.index,
             "start_frame": self.start_frame,
             "end_frame": self.end_frame,
@@ -119,10 +162,16 @@ class SceneRecord:
             "contrast": round(self.contrast, 4),
             "dominant_rgb": list(self.dominant_rgb),
         }
+        if self.sample_start is not None and self.sample_end is not None:
+            value["sample_start"] = self.sample_start
+            value["sample_end"] = self.sample_end
+        return value
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SceneRecord":
         rgb = tuple(int(value) for value in data["dominant_rgb"])
+        sample_start = data.get("sample_start")
+        sample_end = data.get("sample_end")
         return cls(
             index=int(data["index"]),
             start_frame=int(data["start_frame"]),
@@ -131,6 +180,42 @@ class SceneRecord:
             mean_luma=float(data["mean_luma"]),
             contrast=float(data["contrast"]),
             dominant_rgb=(rgb[0], rgb[1], rgb[2]),
+            sample_start=int(sample_start) if sample_start is not None else None,
+            sample_end=int(sample_end) if sample_end is not None else None,
+        )
+
+
+@dataclass(slots=True)
+class InspectionAudioRecord:
+    codec: str
+    channels: int
+    sample_rate: int
+    bits_per_sample: int
+    total_samples: int
+    pcm_digest: str
+    clip_digest: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "codec": self.codec,
+            "channels": self.channels,
+            "sample_rate": self.sample_rate,
+            "bits_per_sample": self.bits_per_sample,
+            "total_samples": self.total_samples,
+            "pcm_digest": self.pcm_digest,
+            "clip_digest": self.clip_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "InspectionAudioRecord":
+        return cls(
+            codec=str(data["codec"]),
+            channels=int(data["channels"]),
+            sample_rate=int(data["sample_rate"]),
+            bits_per_sample=int(data["bits_per_sample"]),
+            total_samples=int(data["total_samples"]),
+            pcm_digest=str(data["pcm_digest"]),
+            clip_digest=str(data["clip_digest"]),
         )
 
 
@@ -145,6 +230,7 @@ class InspectionRecord:
     sampled_frames: list[int] = field(default_factory=list)
     cut_frames: list[int] = field(default_factory=list)
     scenes: list[SceneRecord] = field(default_factory=list)
+    audio: InspectionAudioRecord | None = None
     transitions: list[Transition] = field(default_factory=list)
     error_code: str | None = None
     error_message: str | None = None
@@ -162,6 +248,7 @@ class InspectionRecord:
             "sampled_frames": list(self.sampled_frames),
             "cut_frames": list(self.cut_frames),
             "scenes": [item.as_dict() for item in self.scenes],
+            "audio": self.audio.as_dict() if self.audio is not None else None,
             "transitions": [item.as_dict() for item in self.transitions],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -184,6 +271,7 @@ class InspectionRecord:
             for item in data.get("transitions", [])
             if isinstance(item, dict)
         ]
+        audio = data.get("audio")
         return cls(
             inspection_id=str(data["inspection_id"]),
             clip_id=str(data["clip_id"]),
@@ -198,6 +286,9 @@ class InspectionRecord:
                 for item in data.get("scenes", [])
                 if isinstance(item, dict)
             ],
+            audio=InspectionAudioRecord.from_dict(audio)
+            if isinstance(audio, dict)
+            else None,
             transitions=transitions,
             error_code=data.get("error_code"),
             error_message=data.get("error_message"),

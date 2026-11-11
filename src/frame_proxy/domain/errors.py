@@ -10,6 +10,7 @@ class ErrorCode(str, Enum):
     CLIP_NOT_FOUND = "clip_not_found"
     INSPECTION_NOT_FOUND = "inspection_not_found"
     CONTACT_SHEET_NOT_FOUND = "contact_sheet_not_found"
+    AUDIO_NOT_FOUND = "audio_not_found"
     CONFLICT = "conflict"
     MEDIA_FORMAT = "media_format_not_supported"
     MEDIA_BOUNDS = "media_bounds_exceeded"

@@ -9,6 +9,7 @@ from frame_proxy.domain.policies import (
     validate_clip_id,
     validate_contact_sheet_request,
     validate_inspection_request,
+    validate_scene_index,
 )
 from frame_proxy.http.types import ResponseData
 from frame_proxy.service.clips import ClipService
@@ -86,6 +87,23 @@ class RequestRouter:
             if len(parts) == 3 and method == "GET":
                 record = self._inspections.get(inspection_id)
                 return ResponseData.json(200, {"inspection": record.as_dict()})
+            if (
+                len(parts) == 6
+                and parts[3] == "scenes"
+                and parts[5] == "audio"
+                and method == "GET"
+            ):
+                scene_index = validate_scene_index(parts[4])
+                result = self._inspections.get_scene_audio(inspection_id, scene_index)
+                return ResponseData.binary(
+                    200,
+                    result.payload,
+                    "audio/x-wav",
+                    headers={
+                        "ETag": f'"{result.digest}"',
+                        "X-Frame-Proxy-Clip-Digest": result.clip_digest,
+                    },
+                )
             if (
                 len(parts) == 4
                 and parts[3] == "contact-sheets"

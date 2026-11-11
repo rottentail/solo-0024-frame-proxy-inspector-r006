@@ -19,6 +19,10 @@
     {
       "workflow_id": "create-contact-sheet",
       "command": "PYTHONPATH=src:. python3 tools/check_contact_sheet.py"
+    },
+    {
+      "workflow_id": "read-scene-audio",
+      "command": "PYTHONPATH=src:. python3 tools/check_scene_audio.py"
     }
   ]
 }

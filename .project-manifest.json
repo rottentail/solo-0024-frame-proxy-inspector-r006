@@ -17,7 +17,7 @@
     {
       "id": "media",
       "path": "src/frame_proxy/media",
-      "responsibility": "AVI parsing, frame decoding, frame fingerprints, cut detection, and PPM composition"
+      "responsibility": "AVI parsing, PCM audio slicing, frame decoding, frame fingerprints, cut detection, and PPM composition"
     },
     {
       "id": "service",
@@ -69,11 +69,32 @@
       "steps": [
         "create and transition an inspection job",
         "decode sampled frames and compute fingerprints",
-        "persist contiguous scenes and representative frames"
+        "persist contiguous scenes and representative frames",
+        "bind the verified PCM track and exact scene sample ranges when audio is present"
       ],
       "success": "returns an indexed inspection with complete ordered scene ranges",
       "failure": "returns a failed inspection with no partial successful scene index",
       "verification": "the scene indexing smoke path detects all generated scene changes and verifies the terminal job state",
+      "module_ids": [
+        "http",
+        "domain",
+        "media",
+        "service",
+        "storage"
+      ]
+    },
+    {
+      "id": "read-scene-audio",
+      "name": "Read scene audio",
+      "entry": "GET /v1/inspections/{inspection_id}/scenes/{scene_index}/audio",
+      "steps": [
+        "resolve an indexed inspection with a verified audio track",
+        "re-verify the stored clip bytes against the recorded digests",
+        "slice the scene's exact PCM sample range and wrap it as WAV"
+      ],
+      "success": "returns the scene's lossless PCM audio traceable to the inspected clip",
+      "failure": "returns a stable not-found, validation, or state error without partial audio",
+      "verification": "the scene audio smoke path stitches adjacent scenes over integer and NTSC frame rates and rejects incomplete source tracks",
       "module_ids": [
         "http",
         "domain",

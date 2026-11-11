@@ -194,8 +194,11 @@
     },
     {
       "family": "Audio stream inspection",
-      "occupied_by": [],
-      "available": true
+      "occupied_by": [
+        "pcm_audio_track_probe",
+        "scene_sample_slicing"
+      ],
+      "available": false
     },
     {
       "family": "Tile annotation and safe-area overlays",

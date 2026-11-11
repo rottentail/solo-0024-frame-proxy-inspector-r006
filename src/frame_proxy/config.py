@@ -14,6 +14,8 @@ class Settings:
     max_frame_width: int = 1920
     max_frame_height: int = 1080
     max_frame_count: int = 3000
+    max_audio_channels: int = 8
+    max_audio_sample_rate: int = 384_000
     max_sheet_pixels: int = 250_000
     max_sheet_scenes: int = 36
     request_timeout_seconds: float = 30.0

@@ -8,9 +8,10 @@ from frame_proxy.domain.errors import (
     ErrorCode,
     MediaValidationError,
 )
-from frame_proxy.domain.models import ClipRecord
+from frame_proxy.domain.models import AudioTrackRecord, ClipRecord
 from frame_proxy.domain.policies import validate_clip_id
 from frame_proxy.domain.transitions import transition_clip
+from frame_proxy.media.audio import pcm_stream_digest
 from frame_proxy.media.avi import probe_avi
 from frame_proxy.storage.repository import FileRepository
 
@@ -50,6 +51,28 @@ class ClipService:
                 "clip frame count exceeds the configured limit",
                 code=ErrorCode.MEDIA_BOUNDS,
             )
+        audio_record: AudioTrackRecord | None = None
+        if descriptor.audio is not None:
+            if descriptor.audio.channels > self._settings.max_audio_channels:
+                raise MediaValidationError(
+                    "clip audio channel count exceeds the configured limit",
+                    code=ErrorCode.MEDIA_BOUNDS,
+                )
+            if descriptor.audio.sample_rate > self._settings.max_audio_sample_rate:
+                raise MediaValidationError(
+                    "clip audio sample rate exceeds the configured limit",
+                    code=ErrorCode.MEDIA_BOUNDS,
+                )
+            audio_record = AudioTrackRecord(
+                codec="pcm",
+                channels=descriptor.audio.channels,
+                sample_rate=descriptor.audio.sample_rate,
+                bits_per_sample=descriptor.audio.bits_per_sample,
+                block_align=descriptor.audio.block_align,
+                total_samples=descriptor.audio.total_samples,
+                byte_size=descriptor.audio.byte_size,
+                digest=pcm_stream_digest(payload, descriptor.audio),
+            )
 
         record = ClipRecord(
             clip_id=normalized_id,
@@ -66,6 +89,7 @@ class ClipService:
             top_down=descriptor.top_down,
             frame_offsets=list(descriptor.frame_offsets),
             handler=descriptor.handler,
+            audio=audio_record,
         )
         transition_clip(record, "registered", reason="container and geometry verified")
         try:

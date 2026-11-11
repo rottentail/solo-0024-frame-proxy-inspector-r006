@@ -6,7 +6,7 @@ from pathlib import Path
 from frame_proxy.app import build_router
 from frame_proxy.config import Settings
 from frame_proxy.http.server import build_server
-from frame_proxy.media.avi_writer import build_sample_avi
+from frame_proxy.media.avi_writer import AudioSpec, build_sample_avi
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -27,7 +27,16 @@ def _serve(args: argparse.Namespace) -> int:
 def _demo_avi(args: argparse.Namespace) -> int:
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_sample_avi(width=args.width, height=args.height, fps=args.fps)
+    audio = (
+        AudioSpec(sample_rate=args.audio_sample_rate) if args.with_audio else None
+    )
+    payload = build_sample_avi(
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        fps_denominator=args.fps_denominator,
+        audio=audio,
+    )
     output.write_bytes(payload)
     print(f"wrote {len(payload)} bytes to {output}")
     return 0
@@ -47,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--width", type=int, default=128)
     demo.add_argument("--height", type=int, default=72)
     demo.add_argument("--fps", type=int, default=12)
+    demo.add_argument("--fps-denominator", type=int, default=1)
+    demo.add_argument("--with-audio", action="store_true")
+    demo.add_argument("--audio-sample-rate", type=int, default=48000)
     demo.set_defaults(function=_demo_avi)
     return parser
 

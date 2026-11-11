@@ -35,10 +35,14 @@ class ResponseData:
         status: int,
         payload: bytes,
         content_type: str,
+        headers: dict[str, str] | None = None,
     ) -> "ResponseData":
+        merged = {"Cache-Control": "private, max-age=0"}
+        if headers:
+            merged.update(headers)
         return cls(
             status=status,
             body=payload,
             content_type=content_type,
-            headers={"Cache-Control": "private, max-age=0"},
+            headers=merged,
         )

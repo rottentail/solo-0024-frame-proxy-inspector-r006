@@ -45,6 +45,15 @@ def validate_clip_id(value: str) -> str:
     return validate_identifier(value, "clip_id")
 
 
+def validate_scene_index(value: str) -> int:
+    if not value.isdigit():
+        raise ValidationError(
+            "scene index must be a non-negative integer",
+            details={"field": "scene_index"},
+        )
+    return int(value)
+
+
 def _require_object(body: Any) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise ValidationError("request body must be a JSON object")
